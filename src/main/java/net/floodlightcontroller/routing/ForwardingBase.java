@@ -40,6 +40,7 @@ import net.floodlightcontroller.devicemanager.IDeviceService;
 import net.floodlightcontroller.devicemanager.SwitchPort;
 import net.floodlightcontroller.packet.Ethernet;
 import net.floodlightcontroller.packet.IPacket;
+import net.floodlightcontroller.packet.IPv4;
 import net.floodlightcontroller.routing.IRoutingService;
 import net.floodlightcontroller.routing.IRoutingDecision;
 import net.floodlightcontroller.routing.Route;
@@ -48,6 +49,7 @@ import net.floodlightcontroller.topology.NodePortTuple;
 import net.floodlightcontroller.util.OFMessageDamper;
 import net.floodlightcontroller.util.TimedCache;
 
+import org.openflow.protocol.OFBarrierRequest;
 import org.openflow.protocol.OFFlowMod;
 import org.openflow.protocol.OFMatch;
 import org.openflow.protocol.OFMessage;
@@ -261,9 +263,17 @@ public abstract class ForwardingBase
 
         // TODO:SDN:MOD Set flag: allow switch to report
         fm.setFlags((short) (fm.getFlags() | OFFlowMod.OFPFF_SEND_FLOW_REM));
+        Ethernet eth =
+                IFloodlightProviderService.bcStore.get(cntx,
+                    IFloodlightProviderService.CONTEXT_PI_PAYLOAD);
         
         List<NodePortTuple> switchPortList = route.getPath();
-
+        if(eth.getEtherType()==Ethernet.TYPE_IPv4){
+            IPv4 pkt = (IPv4)eth.getPayload();
+            //log.info("Routes for {} :{}",IPv4.fromIPv4Address(pkt.getSourceAddress()),switchPortList);
+        }
+        
+        boolean trafficRefresh = false;
         for (int indx = switchPortList.size()-1; indx > 0; indx -= 2) {
             // indx and indx-1 will always have the same switch DPID.
             long switchDPID = switchPortList.get(indx).getNodeId();
@@ -317,9 +327,11 @@ public abstract class ForwardingBase
                     //log.info("Working On p={}",priority);
                     if(routingEngine.checkNeedClearEntry(sw.getId(),outPort,priority)){
                         clearPriorityFlowEntries(switchDPID,outPort,priority);
+                        routingEngine.afterSwitchForceClear(sw.getId());
                         //routingEngine.clearTraffic(switchDPID,outPort,rm_p);
                     }
                     routingEngine.addTraffic(switchDPID,outPort,priority,m);
+                    trafficRefresh = true;
                 }
                 
             }
@@ -358,6 +370,9 @@ public abstract class ForwardingBase
                 log.error("Failure cloning flow mod", e);
             }
         }
+        if(trafficRefresh){
+            routingEngine.refreshTopo();
+        }
 
         return srcSwitchIncluded;
     }
@@ -380,8 +395,17 @@ public abstract class ForwardingBase
         
         fm.setLengthU(OFFlowMod.MINIMUM_LENGTH);
         try {
-            //log.info("Delete COokie:{}",fm.getCookie());
+            // clear current entry
             messageDamper.write(sw,fm,null,true);
+            /*
+            // barrier
+            OFBarrierRequest br = (OFBarrierRequest) floodlightProvider
+                    .getOFMessageFactory()
+                    .getMessage(OFType.BARRIER_REQUEST);
+            messageDamper.write(sw, br, null,true);
+            */
+            //log.info("Delete COokie:{}",fm.getCookie());
+            
         }
         catch (IOException e) {
             System.out.printf("$$$ FAIL to clear cookie %d for %s\n", cookie,sw.getId());

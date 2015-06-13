@@ -86,7 +86,8 @@ public class TopologyInstance {
     // TODO:SDN:OBJ object link usage
     protected Map<Link,Map<Integer,Integer> > traffic;
     protected Map<Link,Double> linkLoss;
-    public boolean enableTraffic = false;
+    public boolean enableTraffic = true;
+    public int baseLinkCost = 10;
     
     
     protected class PathCacheLoader extends CacheLoader<RouteId, Route> {
@@ -541,7 +542,7 @@ public class TopologyInstance {
 
                 if (seen.containsKey(neighbor)) continue;
 
-                if (linkCost == null || linkCost.get(link)==null) w = 10;
+                if (linkCost == null || linkCost.get(link)==null) w = baseLinkCost;
                 else w = linkCost.get(link);
 
                 int ndist = cdist + w; // the weight of the link, always 1 in current version of floodlight.
@@ -576,31 +577,37 @@ public class TopologyInstance {
     
     // TODO:SDN:Function adjustWeight
     // try to use traffic 
-    private int adjustWeight(Link l_ori,int priority,int old_w){
+    private int adjustWeight(Link l,int priority,int old_w){
         int new_w = old_w;
         if(traffic==null){
             log.error("$$ TRAFFUC NOT SET! {}",priority);
             return old_w;
         }
-        Link l = new Link(l_ori.getSrc(),l_ori.getSrcPort(),0,0);
+        
         if(traffic.containsKey(l)){
             //log.info("-> traffic for {}",priority);
             Map<Integer,Integer> linkInfo = traffic.get(l);
             for(int p = 0;p<priority;p++){
                 //log.info("--> Higher Prioiry {} with load {}",new Object[]{p,linkInfo.get(p)});
                 // p is upper priority
-                new_w += linkInfo.get(p)*old_w*2; // one more link, one more weight
+                
+                new_w += linkInfo.get(p)*old_w*6; // one more link, 5 more weight!!!
                 /*
-                switch(p){
-                case 0:
-                    new_w += linkInfo.get(p)*2;
-                    break;
-                case 1:
+                // same priority , add 4x
+                if(p==priority){
+                    if(linkInfo.get(p)>1){
+                        //log.info("May enable same priority contention on {}",p);
+                        //new_w += (linkInfo.get(p)-1)*old_w*2;
+                    }
                     
-                    break;
+                }
+                else{
+                    
                 }
                 */
+                
             }
+            
             
         }
         //log.info("Link cost for link:{} : from {} to {}",new Object[]{l,old_w,new_w});
@@ -627,22 +634,26 @@ public class TopologyInstance {
             }
         }
         */
-
+        //log.info("Trees for priority : {}",priority);
         for(Cluster c: clusters) {
             if(enableTraffic){
                 Collection<Set<Link>> link_sets = c.links.values();
                 for(Set<Link> set: link_sets){
-                    for(Link l:set){
-                        int w = adjustWeight(l,priority,10);
-                        linkCost.put(l,w);
+                    for(Link l_ori:set){
+                        Link la = new Link(l_ori.getSrc(),l_ori.getSrcPort(),0,0);
+                        Link lb = new Link(l_ori.getDst(),l_ori.getDstPort(),0,0);
+                        int w = Math.max(adjustWeight(la,priority,baseLinkCost),adjustWeight(lb,priority,baseLinkCost));
+                        linkCost.put(l_ori,w);
                     }
                 }
             }
             for (Long node : c.links.keySet()) {
                 BroadcastTree tree = dijkstra(c, node, linkCost, true);
                 destinationRootedTrees.put(node, tree);
+                //log.info("Tree for {} : {}",node,tree);
             }
         }
+        
     }
 
     protected void calculateBroadcastTreeInClusters() {
@@ -692,7 +703,8 @@ public class TopologyInstance {
 
         Map<Long, Link> nexthoplinks =
                 destinationRootedTrees.get(dstId).getLinks();
-
+        // FIXME:SDN
+        //log.info("Next Hop Links:{}",nexthoplinks);
         if (!switches.contains(srcId) || !switches.contains(dstId)) {
             // This is a switch that is not connected to any other switch
             // hence there was no update for links (and hence it is not
@@ -759,13 +771,16 @@ public class TopologyInstance {
         List<NodePortTuple> nptList;
         NodePortTuple npt;
         Route r = getRoute(srcId, dstId, 0);
+        
         if (r == null && srcId != dstId) return null;
 
         if (r != null) {
             nptList= new ArrayList<NodePortTuple>(r.getPath());
+            //log.info("Routing:{}",r.getPath());
         } else {
             nptList = new ArrayList<NodePortTuple>();
         }
+        
         npt = new NodePortTuple(srcId, srcPort);
         nptList.add(0, npt); // add src port to the front
         npt = new NodePortTuple(dstId, dstPort);
@@ -773,8 +788,7 @@ public class TopologyInstance {
 
         RouteId id = new RouteId(srcId, dstId);
         r = new Route(id, nptList);
-        //log.info("$$$ Route : {}",r);
-        //log.info("$$$ Hops : {}",r.getPath().size());
+
         return r;
     }
 

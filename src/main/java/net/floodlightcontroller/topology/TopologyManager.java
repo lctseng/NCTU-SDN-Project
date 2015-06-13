@@ -38,6 +38,7 @@ import net.floodlightcontroller.core.IFloodlightProviderService.Role;
 import net.floodlightcontroller.core.IHAListener;
 import net.floodlightcontroller.core.IOFMessageListener;
 import net.floodlightcontroller.core.IOFSwitch;
+import net.floodlightcontroller.core.OFSwitchBase;
 import net.floodlightcontroller.core.annotations.LogMessageCategory;
 import net.floodlightcontroller.core.annotations.LogMessageDoc;
 import net.floodlightcontroller.core.module.FloodlightModuleContext;
@@ -73,6 +74,7 @@ import net.floodlightcontroller.routing.Route;
 import net.floodlightcontroller.threadpool.IThreadPoolService;
 import net.floodlightcontroller.topology.web.TopologyWebRoutable;
 
+import org.openflow.protocol.OFFlowMod;
 import org.openflow.protocol.OFFlowRemoved;
 import org.openflow.protocol.OFMatch;
 import org.openflow.protocol.OFMessage;
@@ -84,6 +86,8 @@ import org.openflow.protocol.action.OFAction;
 import org.openflow.protocol.action.OFActionOutput;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.fasterxml.jackson.dataformat.yaml.snakeyaml.nodes.NodeTuple;
 
 /**
  * Topology manager is responsible for maintaining the controller's notion
@@ -194,6 +198,8 @@ public class TopologyManager implements
     protected Map<Integer,TopologyInstance> tiMap;
     protected Map<Link,Set<OFMatch>> linkMatch;
     protected Map<Link,Double> linkLoss;
+    protected Map<OFMatch,MatchTrafficInfo> matchPriority;
+    protected Map<Long,Boolean> forceClearSwitchID;
     
     
     /**
@@ -714,6 +720,24 @@ public class TopologyManager implements
         TopologyInstance ti = getCurrentInstance(tunnelEnabled,0);
         return ti.getRoute(null, src, srcPort, dst, dstPort, cookie);
     }
+    // TODO:SDN:Function ethernetToMatch
+    public OFMatch ethernetToMatch(Ethernet eth){
+        OFMatch m = new OFMatch();
+        m.setDataLayerDestination(eth.getDestinationMACAddress());
+        m.setDataLayerSource(eth.getSourceMACAddress());
+        m.setDataLayerVirtualLan(eth.getVlanID());
+        m.setWildcards(OFMatch.OFPFW_DL_DST | OFMatch.OFPFW_DL_SRC | OFMatch.OFPFW_DL_VLAN);
+        return m;
+    }
+    // TODO:SDN:Function ofMatchToPriority
+    public int ofMatchToPriority(OFMatch match){
+        if(matchPriority.containsKey(match)){
+            return matchPriority.get(match).priority;
+        }
+        else{
+            return 0;
+        }
+    }
     
     // TODO:SDN:Function ethernetToPriority
     public int ethernetToPriority(Ethernet eth){
@@ -725,14 +749,15 @@ public class TopologyManager implements
             ips[1] = ipPkt.getDestinationAddress();
             int pri = 2;
             for(int ip:ips){
-                if(ip==IPv4.toIPv4Address("10.0.0.1")){
+                // h1 and h3 is class 0
+                if(ip==IPv4.toIPv4Address("10.0.0.1") || ip==IPv4.toIPv4Address("10.0.0.3") || ip==IPv4.toIPv4Address("10.0.0.5") || ip==IPv4.toIPv4Address("10.0.0.7")){
                     pri = 0;
-                }
-                else if(ip==IPv4.toIPv4Address("10.0.0.2")){
+                } // h2 and h4 is class 1
+                else if(ip==IPv4.toIPv4Address("10.0.0.2") || ip==IPv4.toIPv4Address("10.0.0.4") || ip==IPv4.toIPv4Address("10.0.0.6") || ip==IPv4.toIPv4Address("10.0.0.8")){
                     pri=Math.min(pri,1);
                 }
             }
-            return pri;
+            return Math.max(pri, ofMatchToPriority(ethernetToMatch(eth)));
         }        
         return 0;
     }
@@ -801,16 +826,96 @@ public class TopologyManager implements
     }
     */
     
+ // TODO:SDN:Function checkReRouteTraffic
+    private boolean checkReRouteTraffic(Route r,Ethernet eth,int old_p){
+        // if this eth was changed it's priority, do no thing
+        if(matchPriority.containsKey(ethernetToMatch(eth))){
+            //log.info("Duplucated check");
+            return false;
+        }
+        // check if this path was used over 50%
+        List<NodePortTuple> path = r.getPath();
+        log.info("Path:{}",path);
+        int count = 0;
+        int maxCount = (path.size()-2) / 4;
+        for(int i=1;i<path.size()-1;i+=2){
+            NodePortTuple np = path.get(i);
+            Link l = new Link(np.getNodeId(),np.getPortId(),0,0);
+            log.info("check lisk:{}",l);
+            if(traffic.containsKey(l)){
+                log.info("Link {} was used!",l);
+                Map<Integer, Integer> linkInfo = traffic.get(l);
+                for(int p=0;p<=old_p;p++){
+                    if(linkInfo.get(p)>0){
+                        count++;
+                        break;
+                    }
+                }
+            }
+        }
+        return count > maxCount;
+    }
+    
+    // TODO:SDN:Function setPriorityWithOFMatch
+    private void setPriorityWithOFMatch(OFMatch match,int p,int old_pri){
+        matchPriority.put(match, new MatchTrafficInfo(p,old_pri));
+    }
+    
     // TODO:SDN:Function getRouteWithEthernetPacket
     @Override
     public Route getRouteWithEthernetPacket(long src, short srcPort, long dst, short dstPort, long cookie , boolean tunnelEnabled,Ethernet eth )
     {
+        
         int priority = ethernetToPriority(eth);
+        int old_pri = priority;
         // log.info("$$$ Get route with priority {}",priority);
         TopologyInstance ti = getCurrentInstance(tunnelEnabled,priority);
-        return ti.getRoute(null, src, srcPort, dst, dstPort, cookie);
+        Route r = ti.getRoute(null, src, srcPort, dst, dstPort, cookie);
+        if(checkReRouteTraffic(r,eth,priority)){
+            
+            log.info("Need re-route for priority:{}",priority);
+            old_pri = priority++;
+            ti = getCurrentInstance(tunnelEnabled,priority);
+            r = ti.getRoute(null, src, srcPort, dst, dstPort, cookie);
+            // request to remove entry for older priority
+            List<NodePortTuple> path = r.getPath();
+            for(int i=1;i<path.size()-1;i+=2){
+                NodePortTuple np = path.get(i);
+                // These should clear use cookie
+                forceClearSwitchID.put(np.getNodeId(), true);
+                //if(checkNeedClearEntry(np.getNodeId(),np.getPortId(),priority-1)){
+                    //log.info("Need Clear on {}");
+                    
+                //}
+                
+            }
+            // if any Match with lower P, and it's fresh, lower it!
+            for(OFMatch m:matchPriority.keySet()){
+                MatchTrafficInfo info = matchPriority.get(m);
+                if((info.old_p > priority || info.fresh()) && info.priority >= priority && info.priority <= 1){
+                    log.info("Change Priority of {} to {}",m,info.priority+1);
+                    info.priority++;
+                    
+                }
+                
+                
+            }
+            
+        }
+        setPriorityWithOFMatch(ethernetToMatch(eth),priority,old_pri);
+        return r;
         
     }
+    // TODO:SDN:Function checkSwitchForceClear
+    public boolean checkSwitchForceClear(Long swId){
+        return forceClearSwitchID.containsKey(swId);
+    }
+    // TODO:SDN:Function afterSwitchForceClear
+    public void afterSwitchForceClear(Long swId){
+        //log.info("Forced clear on {}",swId);
+        forceClearSwitchID.remove(swId);
+    }
+    
     @Override
     public boolean routeExists(long src, long dst) {
         return routeExists(src, dst, true);
@@ -834,7 +939,7 @@ public class TopologyManager implements
     }
     
     // TODO:SDN:Function refreshTopo
-    private void refreshTopo(){
+    public void refreshTopo(){
         linksUpdated = true;
         createNewInstance("refreshTraffic");
     }
@@ -880,6 +985,7 @@ public class TopologyManager implements
         Map<Integer,Integer> linkInfo = traffic.get(l);
         updateTraffic(l,priority,linkInfo.get(priority)-1);
         log.info("Traffic Info:{}",traffic);
+        //log.info("Match Info:{}",linkMatch);
         refreshTopo();
     }
     // TODO:SDN:Function addTraffic
@@ -936,10 +1042,10 @@ public class TopologyManager implements
             
         }
         log.info("Traffic Info:{}",traffic);
+        //log.info("Match Info:{}",linkMatch);
         // TODO:SDN Kick off lower traffic
-        // first, 
         
-        refreshTopo();
+        //refreshTopo();
     }
     
     private void updateTraffic(Link l,int p,int c){
@@ -1123,7 +1229,9 @@ public class TopologyManager implements
         traffic = new HashMap<Link,Map<Integer,Integer> >();
         linkMatch = new HashMap<Link,Set<OFMatch> >();
         linkLoss = new HashMap<Link,Double>();
-        // TODO:SDN find out link loss, don't write dead :(
+        matchPriority = new HashMap<OFMatch,MatchTrafficInfo>();
+        forceClearSwitchID = new HashMap<Long,Boolean>();
+        
         
     }
 
@@ -1717,6 +1825,9 @@ public class TopologyManager implements
             addLinkToStructure(portBroadcastDomainLinks, link);
             dtLinksUpdated = removeLinkFromStructure(directLinks, link);
             linksUpdated = true;
+            //log.info("$$$ MultiHop Link Updated! Traffic Reset");
+            // SDN: reset traffic
+            resetTraffic();
         } else if (type.equals(LinkType.DIRECT_LINK)) {
             addPortToSwitch(srcId, srcPort);
             addPortToSwitch(dstId, dstPort);
@@ -1726,24 +1837,32 @@ public class TopologyManager implements
             removeLinkFromStructure(portBroadcastDomainLinks, link);
             dtLinksUpdated = true;
             linksUpdated = true;
+            //log.info("$$$ Direct Link Updated! Traffic Reset");
+            // SDN: reset traffic
+            resetTraffic();
         } else if (type.equals(LinkType.TUNNEL)) {
             addOrUpdateTunnelLink(srcId, srcPort, dstId, dstPort);
         }
-        // SDN: reset traffic
-        resetTraffic();
+        
      
     }
     
     // TODO:SDN:Function resetTraffic
-    private void resetTraffic(){
-        //log.info("$$$ Link Updated! Traffic Reset");
+    public void resetTraffic(){
+        
         linkMatch.clear();
         traffic.clear();
+        matchPriority.clear();
+        forceClearSwitchID.clear();
+        createNewInstance("Reset Traffic");
     }
     
     // TODO::SDN::Function 
     public boolean checkNeedClearEntry(long switchDPID, short outPort,
             int priority){
+        if(checkSwitchForceClear(switchDPID)){
+            return true;
+        }
         Link l = new Link(switchDPID,outPort,0,0);
         if(!traffic.containsKey(l)){
            return false; 
@@ -1788,6 +1907,9 @@ public class TopologyManager implements
                 switchPorts.get(dstNpt.getNodeId()).isEmpty()) {
             switchPorts.remove(dstNpt.getNodeId());
         }
+        // SDN: reset traffic
+        //log.info("$$$ Link Removed Traffic Reset");
+        resetTraffic();
     }
 
     public void removeLink(long srcId, short srcPort,
@@ -1876,5 +1998,12 @@ public class TopologyManager implements
             ports.removeAll(qPorts);
 
         return ports;
+    }
+
+    @Override
+    public void showTraffic() {
+        // TODO Auto-generated method stub
+        log.info("Traffic Info:{}",traffic);
+        log.info("Match Info:{}",linkMatch);
     }
 }

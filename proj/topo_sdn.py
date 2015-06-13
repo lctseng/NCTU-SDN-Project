@@ -80,6 +80,7 @@ class FatTreeTopo( Topo ):
 BW_NEAR=100
 BW_CORE=100
 BW_LOWER=70
+BW_FAR=40
 
 class ProjTopo1( Topo ):
 
@@ -216,6 +217,8 @@ class ProjTopo5( Topo ):
         s1 = self.addSwitch("s1")
         s2 = self.addSwitch("s2")
         s3 = self.addSwitch("s3")
+        s4 = self.addSwitch("s4")
+        s5 = self.addSwitch("s5")
 
         # Hosts
         h1 = self.addHost("h1")
@@ -237,11 +240,16 @@ class ProjTopo5( Topo ):
         self.addLink(h7,s3,bw=BW_NEAR)
         self.addLink(h8,s3,bw=BW_NEAR)
         
-        # Path1
+        # Path 1
+        self.addLink(s1,s3,bw=BW_CORE)
+        # Path 2
         self.addLink(s1,s2,bw=BW_LOWER)
         self.addLink(s2,s3,bw=BW_LOWER)
-        # Path 2
-        self.addLink(s1,s3,bw=BW_CORE)
+        # Path 3
+        self.addLink(s1,s4,bw=BW_FAR)
+        self.addLink(s4,s5,bw=BW_FAR)
+        self.addLink(s5,s3,bw=BW_FAR)
+
 
 topos = { 'ftree': ( lambda: FatTreeTopo() ), 
           'prj1': ( lambda: ProjTopo1() ), 

@@ -21,6 +21,7 @@ import java.util.ArrayList;
 
 import org.openflow.protocol.OFMatch;
 
+import net.floodlightcontroller.core.IOFSwitch;
 import net.floodlightcontroller.core.module.IFloodlightService;
 import net.floodlightcontroller.packet.Ethernet;
 import net.floodlightcontroller.routing.Route;
@@ -98,5 +99,14 @@ public interface IRoutingService extends IFloodlightService {
             int priority);
 
     public boolean isEnableTraffic();
+
+    public void showTraffic();
+
+    public void refreshTopo();
+
+    public void resetTraffic();
+    
+    // TODO:SDN:Function afterSwitchForceClear
+    public void afterSwitchForceClear(Long swId);
 
 }
