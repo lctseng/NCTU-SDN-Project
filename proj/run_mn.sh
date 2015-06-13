@@ -1,2 +1,2 @@
 #!/bin/sh
-sudo mn --controller=remote,ip=192.168.234.134 --link=tc --custom /home/floodlight/mininet/custom/topo_sdn.py --topo=$1
+sudo mn --controller=remote,ip=127.0.0.1 --link=tc --custom /home/floodlight/NCTU-SDN-Project/proj/topo_sdn.py --topo=$1
