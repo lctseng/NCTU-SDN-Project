@@ -86,7 +86,7 @@ public class TopologyInstance {
     // TODO:SDN:OBJ object link usage
     protected Map<Link,Map<Integer,Integer> > traffic;
     protected Map<Link,Double> linkLoss;
-    public boolean enableTraffic = true;
+    public boolean enableTraffic = false;
     
     
     protected class PathCacheLoader extends CacheLoader<RouteId, Route> {
@@ -541,7 +541,7 @@ public class TopologyInstance {
 
                 if (seen.containsKey(neighbor)) continue;
 
-                if (linkCost == null || linkCost.get(link)==null) w = 1;
+                if (linkCost == null || linkCost.get(link)==null) w = 10;
                 else w = linkCost.get(link);
 
                 int ndist = cdist + w; // the weight of the link, always 1 in current version of floodlight.
@@ -633,7 +633,7 @@ public class TopologyInstance {
                 Collection<Set<Link>> link_sets = c.links.values();
                 for(Set<Link> set: link_sets){
                     for(Link l:set){
-                        int w = adjustWeight(l,priority,1);
+                        int w = adjustWeight(l,priority,10);
                         linkCost.put(l,w);
                     }
                 }
